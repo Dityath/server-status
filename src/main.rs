@@ -2,7 +2,14 @@ use actix_web::{get, App, HttpResponse, HttpServer, Responder};
 use serde::Serialize;
 use std::process::Command;
 use get_if_addrs::get_if_addrs;
-use sysinfo::{Components, System};
+use sysinfo::System;
+
+#[derive(Serialize)]
+struct TempData {
+    motherboard_temp: Option<f32>,
+    cpu_temp: Option<f32>,
+    gpu_temp: Option<f32>,
+}
 
 #[derive(Serialize)]
 struct ServerData {
@@ -17,7 +24,7 @@ struct UsageData {
     memory: f32,
     total_memory: f32,
     memory_percentage: f32,
-    cpu_temp: Option<f32>,
+    temps: TempData,
 }
 
 #[derive(Serialize)]
@@ -94,22 +101,47 @@ fn get_network_interfaces() -> Vec<NetworkInterface> {
         .collect()
 }
 
-fn get_from_sensors() -> Option<f32> {
-    let output = Command::new("sensors").output().ok()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
+fn get_all_temps() -> TempData {
+    let output = Command::new("sensors").output().ok();
+    let stdout = output.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+
+    let mut current_chip: Option<String> = None;
+    let mut motherboard_temp = None;
+    let mut cpu_temp = None;
+    let mut gpu_temp = None;
 
     for line in stdout.lines() {
-        if line.to_lowercase().contains("package id 0") {
-            // Find something like: +39.0°C
-            if let Some(temp_str) = line.split_whitespace().find(|s| s.contains("°C")) {
-                let cleaned = temp_str.trim_start_matches('+').trim_end_matches("°C");
-                if let Ok(temp) = cleaned.parse::<f32>() {
-                    return Some(temp);
-                }
+        if !line.starts_with(' ') && !line.is_empty() && !line.contains(':') {
+            current_chip = Some(line.to_string());
+        }
+
+        if let Some(chip) = &current_chip {
+            let lower = chip.to_lowercase();
+
+            if (lower.contains("asus") || lower.contains("acpitz")) && line.trim().to_lowercase().contains("temp1:") {
+                motherboard_temp = parse_temp_line(line);
+            } else if lower.contains("k10temp") && line.trim().to_lowercase().contains("temp1:") {
+                cpu_temp = parse_temp_line(line);
+            } else if lower.contains("amdgpu") && line.trim().to_lowercase().contains("edge:") {
+                gpu_temp = parse_temp_line(line);
             }
         }
     }
 
+    TempData {
+        motherboard_temp,
+        cpu_temp,
+        gpu_temp,
+    }
+}
+
+fn parse_temp_line(line: &str) -> Option<f32> {
+    for word in line.split_whitespace() {
+        if word.contains("°C") {
+            let clean = word.trim_matches(|c| c == '+' || c == '°' || c == 'C');
+            return clean.parse::<f32>().ok();
+        }
+    }
     None
 }
 
@@ -118,7 +150,6 @@ async fn status() -> impl Responder {
     let mut sys = System::new_all();
     sys.refresh_all();
 
-    // Call uptime as associated function, NOT method
     let uptime_secs = sysinfo::System::uptime();
     let uptime = format!(
         "{}h {}m {}s",
@@ -149,15 +180,7 @@ async fn status() -> impl Responder {
 
     let interfaces = get_network_interfaces();
 
-    let mut components = Components::new();
-    components.refresh();
-
-    let cpu_temp = components
-        .iter()
-        .find(|c| c.label().to_lowercase().contains("cpu"))
-        .map(|c| c.temperature())
-        .or_else(get_from_sensors);
-
+    let all_temps = get_all_temps();
 
     let response = StatusResponse {
         server_status: "online".to_string(),
@@ -172,7 +195,7 @@ async fn status() -> impl Responder {
             memory: used_memory as f32 / (1024.0 * 1024.0 * 1024.0),
             total_memory: total_memory as f32 / (1024.0 * 1024.0 * 1024.0),
             memory_percentage,
-            cpu_temp,
+            temps: all_temps,
         },
         network: NetworkData {
             public_ip,
