@@ -1,4 +1,4 @@
-use actix_web::{get, App, HttpResponse, HttpServer, Responder, guard, web, Error};
+use actix_web::{get, App, HttpResponse, HttpServer, HttpRequest, Responder, web};
 use serde::Serialize;
 use std::process::Command;
 use get_if_addrs::get_if_addrs;
@@ -147,17 +147,17 @@ fn parse_temp_line(line: &str) -> Option<f32> {
     None
 }
 
-fn validate_token(req: &HttpRequest) -> bool {
-    const TOKEN: &str = "your-secret-token-here";
+// fn validate_token(req: &HttpRequest) -> bool {
+//     const TOKEN: &str = "your-secret-token-here";
 
-    if let Some(auth_header) = req.headers().get("Authorization") {
-        if let Ok(auth_str) = auth_header.to_str() {
-            return auth_str == format!("Bearer {}", TOKEN);
-        }
-    }
+//     if let Some(auth_header) = req.headers().get("Authorization") {
+//         if let Ok(auth_str) = auth_header.to_str() {
+//             return auth_str == format!("Bearer {}", TOKEN);
+//         }
+//     }
 
-    false
-}
+//     false
+// }
 
 #[get("/status")]
 async fn status(req: HttpRequest, token: web::Data<String>) -> impl Responder {
@@ -230,7 +230,6 @@ async fn status(req: HttpRequest, token: web::Data<String>) -> impl Responder {
         }
     }
 
-    // Unauthorized if header missing or token invalid
     HttpResponse::Unauthorized().body("Unauthorized")
 }
 
@@ -239,16 +238,16 @@ async fn main() -> std::io::Result<()> {
     dotenv().ok();
 
     let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
-    let token = env::var("TOKEN").unwrap_or_else(|_| "default-token".to_string());
+    let token = env::var("BEARER_TOKEN").unwrap_or_else(|_| "default-token".to_string());
 
     println!("🚀 Server running on http://localhost:{}", port);
 
-    HttpServer::new(|| {
+    HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(token.clone()))
             .service(status)
         })
-        .bind("0.0.0.0:8080")?
+        .bind(format!("0.0.0.0:{}", port))?
         .run()
         .await
 }
