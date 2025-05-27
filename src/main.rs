@@ -1,8 +1,10 @@
-use actix_web::{get, App, HttpResponse, HttpServer, Responder};
+use actix_web::{get, App, HttpResponse, HttpServer, Responder, guard, web, Error};
 use serde::Serialize;
 use std::process::Command;
 use get_if_addrs::get_if_addrs;
 use sysinfo::System;
+use std::env;
+use dotenv::dotenv;
 
 #[derive(Serialize)]
 struct TempData {
@@ -145,75 +147,107 @@ fn parse_temp_line(line: &str) -> Option<f32> {
     None
 }
 
+fn validate_token(req: &HttpRequest) -> bool {
+    const TOKEN: &str = "your-secret-token-here";
+
+    if let Some(auth_header) = req.headers().get("Authorization") {
+        if let Ok(auth_str) = auth_header.to_str() {
+            return auth_str == format!("Bearer {}", TOKEN);
+        }
+    }
+
+    false
+}
+
 #[get("/status")]
-async fn status() -> impl Responder {
-    let mut sys = System::new_all();
-    sys.refresh_all();
+async fn status(req: HttpRequest, token: web::Data<String>) -> impl Responder {
+    if let Some(auth_header) = req.headers().get("Authorization") {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if auth_str == format!("Bearer {}", token.get_ref()) {
+                // Authorized — continue with your existing logic
 
-    let uptime_secs = sysinfo::System::uptime();
-    let uptime = format!(
-        "{}h {}m {}s",
-        uptime_secs / 3600,
-        (uptime_secs % 3600) / 60,
-        uptime_secs % 60
-    );
+                let mut sys = System::new_all();
+                sys.refresh_all();
 
-    let cpu_name = sys.cpus().first().map(|c| c.brand().to_string()).unwrap_or_default();
-    let cpu_percentage = sys.global_cpu_info().cpu_usage();
+                let uptime_secs = sysinfo::System::uptime();
+                let uptime = format!(
+                    "{}h {}m {}s",
+                    uptime_secs / 3600,
+                    (uptime_secs % 3600) / 60,
+                    uptime_secs % 60
+                );
 
-    let total_memory = sys.total_memory();
-    let used_memory = sys.used_memory();
-    let memory_percentage = (used_memory as f32 / total_memory as f32) * 100.0;
+                let cpu_name = sys.cpus().first().map(|c| c.brand().to_string()).unwrap_or_default();
+                let cpu_percentage = sys.global_cpu_info().cpu_usage();
 
-    let public_ip = ureq::get("https://api.ipify.org")
-        .call()
-        .ok()
-        .and_then(|res| res.into_string().ok())
-        .unwrap_or_else(|| "Unavailable".to_string());
+                let total_memory = sys.total_memory();
+                let used_memory = sys.used_memory();
+                let memory_percentage = (used_memory as f32 / total_memory as f32) * 100.0;
 
-    let ping_ms = get_ping_ms();
+                let public_ip = ureq::get("https://api.ipify.org")
+                    .call()
+                    .ok()
+                    .and_then(|res| res.into_string().ok())
+                    .unwrap_or_else(|| "Unavailable".to_string());
 
-    let (speed_download_mbps, speed_upload_mbps) = match get_speedtest() {
-        Some((d, u)) => (Some(d), Some(u)),
-        None => (None, None),
-    };
+                let ping_ms = get_ping_ms();
 
-    let interfaces = get_network_interfaces();
+                let (speed_download_mbps, speed_upload_mbps) = match get_speedtest() {
+                    Some((d, u)) => (Some(d), Some(u)),
+                    None => (None, None),
+                };
 
-    let all_temps = get_all_temps();
+                let interfaces = get_network_interfaces();
 
-    let response = StatusResponse {
-        server_status: "online".to_string(),
-        server_uptime: uptime,
-        server_data: ServerData {
-            server_name: sysinfo::System::host_name(),
-            server_cpu: cpu_name,
-            server_os: sysinfo::System::name(),
-        },
-        data: UsageData {
-            cpu_percentage,
-            memory: used_memory as f32 / (1024.0 * 1024.0 * 1024.0),
-            total_memory: total_memory as f32 / (1024.0 * 1024.0 * 1024.0),
-            memory_percentage,
-            temps: all_temps,
-        },
-        network: NetworkData {
-            public_ip,
-            ping_ms,
-            speed_download_mbps,
-            speed_upload_mbps,
-            interfaces,
-        },
-    };
+                let all_temps = get_all_temps();
 
-    HttpResponse::Ok().json(response)
+                let response = StatusResponse {
+                    server_status: "online".to_string(),
+                    server_uptime: uptime,
+                    server_data: ServerData {
+                        server_name: sysinfo::System::host_name(),
+                        server_cpu: cpu_name,
+                        server_os: sysinfo::System::name(),
+                    },
+                    data: UsageData {
+                        cpu_percentage,
+                        memory: used_memory as f32 / (1024.0 * 1024.0 * 1024.0),
+                        total_memory: total_memory as f32 / (1024.0 * 1024.0 * 1024.0),
+                        memory_percentage,
+                        temps: all_temps,
+                    },
+                    network: NetworkData {
+                        public_ip,
+                        ping_ms,
+                        speed_download_mbps,
+                        speed_upload_mbps,
+                        interfaces,
+                    },
+                };
+
+                return HttpResponse::Ok().json(response);
+            }
+        }
+    }
+
+    // Unauthorized if header missing or token invalid
+    HttpResponse::Unauthorized().body("Unauthorized")
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    println!("🚀 Server running on http://localhost:8080");
+    dotenv().ok();
 
-    HttpServer::new(|| App::new().service(status))
+    let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+    let token = env::var("TOKEN").unwrap_or_else(|_| "default-token".to_string());
+
+    println!("🚀 Server running on http://localhost:{}", port);
+
+    HttpServer::new(|| {
+        App::new()
+            .app_data(web::Data::new(token.clone()))
+            .service(status)
+        })
         .bind("0.0.0.0:8080")?
         .run()
         .await
