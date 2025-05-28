@@ -147,24 +147,11 @@ fn parse_temp_line(line: &str) -> Option<f32> {
     None
 }
 
-// fn validate_token(req: &HttpRequest) -> bool {
-//     const TOKEN: &str = "your-secret-token-here";
-
-//     if let Some(auth_header) = req.headers().get("Authorization") {
-//         if let Ok(auth_str) = auth_header.to_str() {
-//             return auth_str == format!("Bearer {}", TOKEN);
-//         }
-//     }
-
-//     false
-// }
-
 #[get("/status")]
 async fn status(req: HttpRequest, token: web::Data<String>) -> impl Responder {
     if let Some(auth_header) = req.headers().get("Authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
             if auth_str == format!("Bearer {}", token.get_ref()) {
-                // Authorized — continue with your existing logic
 
                 let mut sys = System::new_all();
                 sys.refresh_all();
@@ -239,6 +226,8 @@ async fn main() -> std::io::Result<()> {
 
     let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
     let token = env::var("BEARER_TOKEN").unwrap_or_else(|_| "default-token".to_string());
+
+    println!("Loaded token: {}", token);
 
     println!("🚀 Server running on http://localhost:{}", port);
 
